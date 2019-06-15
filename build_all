@@ -1,0 +1,461 @@
+#!/bin/bash
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+OLDPATH=$PATH
+# store wx-config link
+OLD_WXCONFIG="$(readlink -f /usr/bin/wx-config)"
+
+OPTIND=1         # Reset in case getopts has been used previously in the shell.
+
+# Source progress bar
+source ./progress_bar.sh
+# Make sure that the progress bar is cleaned up when user presses ctrl+c
+enable_trapping
+# Create progress bar
+setup_scroll_area
+
+XVFB_PID=0  # save PID to kill XVFB later
+
+clean_up () {
+    ARG=$?
+    echo "> clean_up"
+    echo "> reset wxconfig"
+    ln -sf $OLD_WXCONFIG /usr/bin/wx-config
+    if [[ $XVFB_PID -ne 0 ]];
+    then
+       echo "> kill  XVFB"
+       kill $XVFB_PID
+    fi
+    destroy_scroll_area
+    exit $ARG
+
+XVFB_PID
+} 
+trap clean_up EXIT
+
+
+
+show_logo () {
+echo " _____       ______   _             _  _      _   _                 _      "
+echo "/  __ \ _  _ | ___ \ | |           (_)| |    | | | |               | |     "
+echo "| /  \/(_)(_)| |_/ / | |__   _   _  _ | |  __| | | |_  ___    ___  | | ___ "
+echo "| |          | ___ \ |  _ \ | | | || || | / _  | | __|/ _ \  / _ \ | |/ __|"
+echo "| \__/\ _  _ | |_/ / | |_) || |_| || || || (_| | | |_| (_) || (_) || |\__ \ "
+echo " \____/(_)(_)\____/  |_.__/  \__,_||_||_| \__,_|  \__|\___/  \___/ |_||___/"
+echo " "
+echo " "
+}
+
+# Initialize our own variables:
+verbose=0
+warning=1
+showconfigdiag=1
+
+DELETEFOLDER=0
+CLEANINSTALLS=0
+RUNCONFIG=1
+BUILD_WX30=0
+BUILD_WX28=0
+BUILD_WX31=0
+DOS_UNIX=0
+BUILD_WITH_CONF=1
+BUILD_WITH_CB=1
+USE_VIRT_X=1
+BUILD_DEBUG=0
+
+show_help () {
+    show_logo
+    echo "> Build script to automatically build all unix versions of codeblocks" 
+    echo ">WARNING: you can not chain the arguments. -nNc is not valid. You have to type -n -N -c" 
+    echo "> Parameters:"
+    echo "> general parameter:"
+    echo "> -h ... help "
+    echo "> build process parameter:"
+    echo "> -n ... do not show the warning at the beginning (" $(if [[ $warning -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> -N ... do not show the config dialog at the beginning (" $(if [[ $showconfigdiag -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> -c ... use configure to build codeblocks (" $(if [[ $BUILD_WITH_CONF -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> -C ... use Codeblocks to build codeblocks (" $(if [[ $BUILD_WITH_CB -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> -r ... run configure before the build process (" $(if [[ $RUNCONFIG -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> -R ... run clean before the build process (" $(if [[ $CLEANINSTALLS -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> -d ... run dos2unix before the build process (" $(if [[ $DOS_UNIX -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> -D ... delete all output folder first  (" $(if [[ $DELETEFOLDER -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> -A ... turn all settings on, make a fresh build of everything"
+    echo "> -g ... !! NOT IMPLEMENTED !!! build with debug options (only configure part of the script) !! NOT IMPLEMENTED !!!"
+    echo "> used wxWidgets versions "
+    echo "> -f ... parameter for version:"
+    echo ">    wx30 (" $(if [[ $BUILD_WX30 -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo ">    wx28 (" $(if [[ $BUILD_WX28 -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo ">    wx31 (" $(if [[ $BUILD_WX31 -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> Other configuration options"
+    echo "> -v ...run codeblocks in a virtual X server (Xvfb has to be installed) (" $(if [[ $USE_VIRT_X -eq 1 ]] ; then echo on; else echo off; fi) ")"
+    echo "> How it works:"
+    echo "> This script will expect the codeblocks code in the folder 'local_code' in the same folder as the script. Then it will copy the code with rsync in: "
+    echo ">    local_code_wx28 ... for the configure run with wx 28"
+    echo ">    local_code_wx30 ... for the configure run with wx 30"
+    echo ">    local_code_wx31 ... for the configure run with wx 31"
+    echo ">    local_code_cb   ... for the build process with codeblocks. Here all wx versions are build in one folder because they are separated by codeblocks"
+    echo "> The script expects the different wxWidgets versions in different folder: "
+    echo ">    * wx30 ... it uses the system default wxWidgets installation"
+    echo ">    * wx28 ... the wxWidgets installation has to be in the subfolder 'wxInstall/wx28' of the script location"
+    echo ">    * wx31 ... the wxWidgets installation has to be in the subfolder 'wxInstall/wx31' of the script location"
+    echo "> This script uses CCACHE for compilation speed up!!!"
+}
+
+while getopts "h?nNcCrRdDAvf:g" opt; do
+    case "$opt" in
+    h|\?)
+        show_help
+        exit 0
+        ;;
+    n)  warning=0
+        ;;
+    N)  showconfigdiag=0
+        ;;
+    c)  BUILD_WITH_CONF=1
+        ;;
+    C)  BUILD_WITH_CB=1
+        ;;
+    r)  RUNCONFIG=1
+        ;;
+    R)  CLEANINSTALLS=1
+        ;;
+    d)  DOS_UNIX=1
+        ;;
+    D)  DELETEFOLDER=1
+        ;;
+    A)  RUNCONFIG=1
+        BUILD_WITH_CONF=1
+        BUILD_WITH_CB=1
+        RUNCONFIG=1
+        DOS_UNIX=1
+        DELETEFOLDER=1
+        CLEANINSTALLS=1
+        BUILD_WX30=1
+        BUILD_WX28=1
+        BUILD_WX31=1
+        ;;
+    f)  echo "output is ("$OPTARG")"
+        if [[ "$OPTARG" == "wx30" ]] ; then  BUILD_WX30=1
+        elif [[ "$OPTARG" == "wx28" ]] ; then  BUILD_WX28=1 
+        elif [[ "$OPTARG" == "wx31" ]] ; then  BUILD_WX31=1 
+        fi
+        ;;
+    v)  USE_VIRT_X=1
+        ;;
+    g)  BUILD_DEBUG=1
+        ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ $warning = 1 ]; then
+    dialog --keep-tite --colors --title '\Z1\Zr !!!!WARNING !!!!'  --msgbox 'Atention: This script has to run as root and will modify your environment!!!! It will change the wx-config symbolic link to match the right wx installation.\n\n \Z1\Zr!!!!DO NOT RUN THIS ON PRODUCTION SYSTEMS !!!!' 10 60
+fi
+
+if [ $showconfigdiag = 1 ]; then
+    option=$(dialog --keep-tite --checklist --output-fd 1 "Choose packages:" 15 60 10 \
+                                                                                       1 "delete folder" $(if [[ $DELETEFOLDER -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       2 "make clean" $(if [[ $CLEANINSTALLS -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       3 "run configure" $(if [[ $RUNCONFIG -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       4 "wx30" $(if [[ $BUILD_WX30 -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       5 "wx28" $(if [[ $BUILD_WX28 -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       6 "wx31" $(if [[ $BUILD_WX31 -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       7 "dos2unix" $(if [[ $DOS_UNIX -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       8 "build with conf" $(if [[ $BUILD_WITH_CONF -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       9 "build with codeblocks" $(if [[ $BUILD_WITH_CB -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       10 "use virtual x" $(if [[ $USE_VIRT_X -eq 1 ]] ; then echo on; else echo off; fi) \
+                                                                                       11 "!! NOT IMPLEMENTED !!! build with debug symbols" $(if [[ $BUILD_DEBUG -eq 1 ]] ; then echo on; else echo off; fi) \
+            )
+    exitstatus=$?
+    if [ $exitstatus = 0 ]; then
+        echo "$option"
+
+    if [[ " ${option[@]} " =~ " 1 " ]]; then
+        echo "Delete all folder"
+        DELETEFOLDER=1
+    else
+       DELETEFOLDER=0
+    fi
+
+    if [[ " ${option[@]} " =~ " 2 " ]]; then
+        echo "execute make clean"
+        CLEANINSTALLS=1
+    else
+        CLEANINSTALLS=0
+    fi
+
+    if [[ " ${option[@]} " =~ " 3 " ]]; then
+        echo "execute configure"
+        RUNCONFIG=1
+    else
+       RUNCONFIG=0
+    fi
+
+    if [[ " ${option[@]} " =~ " 4 " ]]; then
+        echo "Build wx30"
+        BUILD_WX30=1
+    else
+       BUILD_WX30=0
+    fi
+
+    if [[ " ${option[@]} " =~ " 5 " ]]; then
+        echo "Build wx28"
+        BUILD_WX28=1
+    else
+        BUILD_WX28=0
+    fi
+
+    if [[ " ${option[@]} " =~ " 6 " ]]; then
+        echo "Build wx31"
+        BUILD_WX31=1
+    else
+        BUILD_WX31=0
+    fi
+
+    if [[ " ${option[@]} " =~ " 7 " ]]; then
+        echo "dos2unix"
+        DOS_UNIX=1
+    else
+        DOS_UNIX=0
+    fi
+
+    if [[ " ${option[@]} " =~ " 8 " ]]; then
+        echo "Build with configure"
+        BUILD_WITH_CONF=1
+    else
+        BUILD_WITH_CONF=0
+    fi
+
+    if [[ " ${option[@]} " =~ " 9 " ]]; then
+        echo "build with codeblocks"
+        BUILD_WITH_CB=1
+    else
+        BUILD_WITH_CB=0
+    fi
+    if [[ " ${option[@]} " =~ " 10 " ]]; then
+        echo "Use virtual x server "
+        USE_VIRT_X=1
+    else
+        USE_VIRT_X=0
+    fi
+    if [[ " ${option[@]} " =~ " 11 " ]]; then
+        echo "Use virtual x server "
+        BUILD_DEBUG=1
+    else
+        BUILD_DEBUG=0
+    fi
+    else    # user cancel
+        echo "Cancel"
+        exit 1
+    fi
+
+fi  # show config dialogue
+
+show_logo
+
+draw_progress_bar 0
+
+# check requirements 
+if [ ! -d "local_code" ]; then
+   echo "Codeblocks code folder (local_code) does not exists... See help..."
+        exit 1
+fi
+command -v rsync >/dev/null 2>&1 || { echo >&2 "I require rsync but it's not installed.  Aborting."; exit 1; }
+command -v ccache >/dev/null 2>&1 || { echo >&2 "I require ccache but it's not installed.  Aborting."; exit 1; }
+
+
+set -e
+#rsync -ar --exclude='src/.objs' --exclude='src/.objs30' --exclude='src/.objs31' --exclude='src/devel' --exclude='src/devel30' --exclude='src/devel31' --exclude='src/output' --exclude='src/output30' --exclude='src/output31' --exclude='src/.objs_64' --exclude='src/.objs30_64' --exclude='src/.objs31_64' --exclude='src/devel_64' --exclude='src/devel30_64' --exclude='src/devel31_64' --exclude='src/output_64' --exclude='src/output30_64' --exclude='src/output31_64' --exclude='.svn' "code/" "local_code/"
+cd local_code
+draw_progress_bar 10
+if [[ $DOS_UNIX -eq 1 ]];
+then
+   find . -type f -print0 | xargs -0 dos2unix
+fi
+draw_progress_bar 20
+cd $DIR
+
+# Build codeblocks wx30 with system library and configure
+if [[ $BUILD_WITH_CONF -eq 1 ]];
+then
+	if [[ $BUILD_WX30 -eq 1 ]];
+	then
+	   rsync -r local_code/ local_code_wx30
+	   cd local_code_wx30
+	   if [[ $DELETEFOLDER -eq 1 ]];
+	   then
+		  rm -rf $DIR/cb_install
+	   fi
+	   ./bootstrap
+	   if [[ $RUNCONFIG -eq 1 ]];
+	   then
+		   ./configure --with-contrib-plugins=all --prefix=$DIR/cb_install CC="ccache gcc" CXX="ccache g++"
+	   fi
+	   if [[ $CLEANINSTALLS -eq 1 ]];
+	   then
+		  make clean
+	   fi
+       # CPPFLAGS="$(if [[ $BUILD_DEBUG -eq 1 ]] ; then echo -g; fi)"
+	   make -j2
+	   make install
+	fi
+	draw_progress_bar 30
+	cd $DIR
+
+	# Build codeblocks wx28 with system library and configure
+	if [[ $BUILD_WX28 -eq 1 ]]
+	then
+    
+        if [ ! -d "wxInstall/wx28" ]; then
+        echo "wxWidgets 2.8 installation  code folder (wxInstall/wx28) does not exists... See help..."
+            exit 1
+        fi
+    
+	   rsync -r local_code/ local_code_wx28
+	   cd local_code_wx28
+
+	   if [[ $DELETEFOLDER -eq 1 ]];
+	   then
+		  rm -rf $DIR/cb_install_wx28
+	   fi
+	   if [[ $CLEANINSTALLS -eq 1 ]];
+	   then
+		  make clean
+	   fi
+	   if [[ $RUNCONFIG -eq 1 ]];
+	   then
+		  ./configure --with-contrib-plugins=all --with-wx-config=$DIR/wxInstall/wx28/bin/wx-config --prefix=$DIR/cb_install_wx28 CC="ccache gcc" CXX="ccache g++"
+	   fi
+       # CPPFLAGS=$(if [[ $BUILD_DEBUG -eq 1 ]] ; then echo -g; fi)
+	   make -j2
+	   make install
+	fi
+	draw_progress_bar 40
+	cd $DIR
+
+
+	# Build codeblocks wx31 with system library and configure
+	if [[ $BUILD_WX31 -eq 1 ]];
+	then
+        if [ ! -d "wxInstall/wx31" ]; then
+        echo "wxWidgets 3.1 installation  code folder (wxInstall/wx28) does not exists... See help..."
+            exit 1
+        fi
+    
+	   rsync -r local_code/ local_code_wx31
+	   cd local_code_wx31
+
+	   if [[ $DELETEFOLDER -eq 1 ]];
+	   then
+		  rm -rf $DIR/cb_install_wx31
+	   fi
+	   if [[ $CLEANINSTALLS -eq 1 ]];
+	   then
+		  make clean
+	   fi
+	   if [[ $RUNCONFIG -eq 1 ]];
+	   then
+		  ./configure --with-contrib-plugins=all --with-wx-config=$DIR/wxInstall/wx31/bin/wx-config --prefix=$DIR/cb_install_wx31 CC="ccache gcc" CXX="ccache g++"
+	   fi
+       # CPPFLAGS=$(if [[ $BUILD_DEBUG -eq 1 ]] ; then echo -g; fi)
+	   make -j2
+	   make install
+	fi
+fi   # Close if for build with configure
+draw_progress_bar 50
+cd $DIR
+
+
+if [[ $BUILD_WITH_CB -eq 1 ]];
+then
+
+	#setup virtual x server
+	if [[ $USE_VIRT_X -eq 1 ]];
+	then
+    
+       command -v Xvfb >/dev/null 2>&1 || { echo >&2 "I require Xvfb but it's not installed.  Aborting."; exit 1; }
+    
+	   export DISPLAY=:1
+	   Xvfb :1 -screen 0 1024x768x16 &
+	   XVFB_PID=$!
+	fi
+    cd $DIR
+    
+    if [ ! -d "cb_install" ]; then
+    echo "Codeblocks installation folder (cb_install) does not exists... I need thsi to build codeblocks with codeblocks... Please Run this script with 'build with conf' first ( or run this script with parameter -C)"
+        exit 1
+    fi
+
+	
+	#rsync -r local_code/ local_code_cb
+	draw_progress_bar 55
+	# build codeblocks with codeblocksand wx30
+	if [[ $BUILD_WX30 -eq 1 ]];
+	then
+	   if [[ $CLEANINSTALLS -eq 1 ]];
+	   then
+		 $DIR/cb_install/bin/codeblocks --target=All --no-splash-screen --clean local_code_cb/src/CodeBlocks_wx30-unix.workspace
+	   fi
+
+	   gdb -ex run --args $DIR/cb_install/bin/codeblocks --target=All --no-splash-screen --build local_code_cb/src/CodeBlocks_wx30-unix.workspace
+	fi
+	draw_progress_bar 60
+
+	# build codeblocks with codeblocksand wx28
+	if [[ $BUILD_WX28 -eq 1 ]];
+	then
+        if [ ! -d "wxInstall/wx28" ]; then
+        echo "wxWidgets 2.8 installation  code folder (wxInstall/wx28) does not exists... See help..."
+            exit 1
+        fi
+    
+	   # replace wx-config with the new destination
+	   ln -sf $DIR/wxInstall/wx28/bin/wx-config /usr/bin/wx-config
+
+	   if [[ $CLEANINSTALLS -eq 1 ]];
+	   then
+		  gdb -ex run --args $DIR/cb_install/bin/codeblocks --target=All --no-splash-screen --clean local_code_cb/src/CodeBlocks-unix.workspace
+	   fi
+
+	   gdb -ex run --args $DIR/cb_install/bin/codeblocks --target=All --no-splash-screen --build local_code_cb/src/CodeBlocks-unix.workspace
+	   
+	   echo "finished codeblocks with codeblocksand wx28"
+	   
+	   # restore wx-config
+	   ln -sf $OLD_WXCONFIG /usr/bin/wx-config
+
+	fi
+
+	
+
+#	draw_progress_bar 70
+#
+#	if [[ $BUILD_WX31 -eq 1 ]];
+#	then
+#	   echo "build codeblocks with codeblocksand wx31"
+#
+#        if [ ! -d "wxInstall/wx31" ]; then
+#        echo "wxWidgets 3.1 installation  code folder (wxInstall/wx28) does not exists... See help..."
+#            exit 1
+#        fi
+#
+#	   # replace wx-config with the new destination
+#	   ln -sf $DIR/wxInstall/wx31/bin/wx-config /usr/bin/wx-config
+#	   
+#	   if [[ $CLEANINSTALLS -eq 1 ]];
+#	   then
+#		  $DIR/cb_install/bin/codeblocks --target=All --no-splash-screen --clean local_code_cb/src/CodeBlocks_wx31-unix.workspace
+#	   fi
+#	   
+#	   $DIR/cb_install/bin/codeblocks --target=All --no-splash-screen --build local_code_cb/src/CodeBlocks_wx31-unix.workspace
+#	   
+#	   # restore wx-config
+#	   ln -sf $OLD_WXCONFIG /usr/bin/wx-config
+#
+#	fi
+	draw_progress_bar 80
+
+	# Close if for build codeblocks with codeblocks
+fi 
+
+draw_progress_bar 100
+clean_up

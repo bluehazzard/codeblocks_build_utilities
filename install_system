@@ -1,0 +1,85 @@
+#!/bin/bash
+
+clean_up () {
+    ARG=$?
+    destroy_scroll_area
+    exit $ARG
+} 
+trap clean_up EXIT
+
+show_logo () {
+echo " _____       ______   _             _  _      _   _                 _      "
+echo "/  __ \ _  _ | ___ \ | |           (_)| |    | | | |               | |     "
+echo "| /  \/(_)(_)| |_/ / | |__   _   _  _ | |  __| | | |_  ___    ___  | | ___ "
+echo "| |          | ___ \ |  _ \ | | | || || | / _  | | __|/ _ \  / _ \ | |/ __|"
+echo "| \__/\ _  _ | |_/ / | |_) || |_| || || || (_| | | |_| (_) || (_) || |\__ \ "
+echo " \____/(_)(_)\____/  |_.__/  \__,_||_||_| \__,_|  \__|\___/  \___/ |_||___/"
+echo " "
+echo " "
+}
+
+set -e
+show_logo
+# save current directory...
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+#echo $DIR
+
+warning = 1
+
+if [ $warning = 1 ]; then
+    dialog --keep-tite --colors --title '\Z1\Zr !!!!WARNING !!!!'  --msgbox 'Atention: This script has to run as root and will modify your environment!!!! This script will set up all things you need to build codeblocks with the "build_all" script. So it will install and build a lot things....\n\n \Z1\Zr!!!!DO NOT RUN THIS ON PRODUCTION SYSTEMS !!!!' 10 60
+fi
+
+# Source progress bar
+source ./progress_bar.sh
+# Make sure that the progress bar is cleaned up when user presses ctrl+c
+enable_trapping
+# Create progress bar
+setup_scroll_area
+draw_progress_bar 0
+echo "> install general tools"
+apt install openssh-server rsync dos2unix -y 
+draw_progress_bar 10
+echo "> install build tools"
+apt install gcc build-essential subversion libtool ccache autotools-dev automake debhelper cdbs -y
+draw_progress_bar 20
+
+echo "> install libraries tools"
+apt install libgtk2.0-dev libhunspell-dev libgamin-dev libboost-dev libboost-system-dev libbz2-dev dialog -y
+
+echo "> setup ccache for compiling speedup"
+#apt install ccache dos2unix -y
+/usr/sbin/update-ccache-symlinks
+echo 'export PATH="/usr/lib/ccache:$PATH"' | tee -a ~/.bashrc
+source ~/.bashrc && echo $PATH
+ccache -F 0
+ccache -M 0
+draw_progress_bar 30
+
+# Add current user to vboxsf groups so it can read shared folder things
+#sudo adduser $USER vboxsf
+echo "> download and build wxWidgets library"
+#Install wxWidgets
+apt install libwxgtk3.0-dev -y
+#Build wxWidgets 312 and 2812
+wget https://github.com/wxWidgets/wxWidgets/releases/download/v3.1.2/wxWidgets-3.1.2.tar.bz2
+tar -x -f wxWidgets-3.1.2.tar.bz2
+draw_progress_bar 40
+cd wxWidgets-3.1.2
+./configure --enable-unicode --enable-monolithic --enable-debug --enable-shared --prefix=$DIR/wxInstall/wx31
+make
+make install
+draw_progress_bar 50
+cd $DIR
+wget https://github.com/wxWidgets/wxWidgets/releases/download/v2.8.12/wxGTK-2.8.12.tar.gz
+tar -x -f wxGTK-2.8.12.tar.gz
+draw_progress_bar 60
+cd wxGTK-2.8.12
+patch < ../wx28.patch
+./configure --enable-unicode --enable-monolithic --enable-debug --enable-shared --enable-display --prefix=$DIR/wxInstall/wx28 CFLAGS=-std=c99 CXXFLAGS=-std=c++98
+make
+make install
+draw_progress_bar 70
+cd $DIR
+
+draw_progress_bar 100
